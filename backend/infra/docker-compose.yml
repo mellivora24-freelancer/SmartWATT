@@ -19,9 +19,7 @@ services:
     environment:
       MOSQUITTO_USERNAME: smartwatt
       MOSQUITTO_PASSWORD: smartwatt
+    volumes:
+      - ./mosquitto/:/mosquitto/
     command: >
-      sh -c "
-      mosquitto_passwd -c -b /mosquitto/config/passwd.txt $${MOSQUITTO_USERNAME} $${MOSQUITTO_PASSWORD} &&
-      mosquitto -c /mosquitto-no-auth.conf
-      "
-
+      sh -c "mosquitto -c /mosquitto/mosquitto.conf"
