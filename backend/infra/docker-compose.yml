@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -11,23 +9,19 @@ services:
       POSTGRES_PASSWORD: smartwatt
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./backend/infra/sql:/docker-entrypoint-initdb.d:ro
 
   mosquitto:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.0
     container_name: smartwatt-mosquitto
     restart: unless-stopped
     ports:
       - "1883:1883"
-      - "9001:9001"
-    volumes:
-      - ./docker/mosquitto:/mosquitto/config:ro
-      - mosquitto_data:/mosquitto/data
-      - mosquitto_log:/mosquitto/log
+    environment:
+      MOSQUITTO_USERNAME: smartwatt
+      MOSQUITTO_PASSWORD: smartwatt
+    command: >
+      sh -c "
+      mosquitto_passwd -c -b /mosquitto/config/passwd.txt $${MOSQUITTO_USERNAME} $${MOSQUITTO_PASSWORD} &&
+      mosquitto -c /mosquitto-no-auth.conf
+      "
 
-volumes:
-  postgres_data:
-  mosquitto_data:
-  mosquitto_log:
