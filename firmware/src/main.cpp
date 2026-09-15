@@ -38,7 +38,6 @@ unsigned long splashStartTime = 0;
 bool widgetsDrawn = false;
 
 volatile uint32_t pulseCounter = 0;
-uint32_t lastPulseSnapshot = 0;
 unsigned long lastWaterMeasureTime = 0;
 float latestWaterFlowLpm = 0;
 
@@ -48,6 +47,16 @@ float latestPower = NAN;
 float latestPowerFactor = NAN;
 float latestFrequency = NAN;
 unsigned long lastPzemReadTime = 0;
+
+// Snapshot of last published values for change detection
+float lastSentVoltage = -999.0f;
+float lastSentCurrent = -999.0f;
+float lastSentPower = -999.0f;
+float lastSentPowerFactor = -999.0f;
+float lastSentFrequency = -999.0f;
+float lastSentWaterFlow = -999.0f;
+double lastSentEnergyTotal = -999.0;
+double lastSentWaterTotal = -999.0;
 
 bool wifiConnectInProgress = false;
 unsigned long wifiConnectStartTime = 0;
@@ -131,7 +140,8 @@ void manageWiFiConnection();
 void manageMqttConnection();
 void requestServerConfig();
 void mqttCallback(char *topic, byte *payload, unsigned int length);
-void publishTelemetry();
+bool hasSignificantChange();
+void publishTelemetry(const char *reason = "change");
 void readPzemData();
 void IRAM_ATTR yf201PulseISR();
 void updateWaterFlow();
@@ -380,7 +390,7 @@ void manageWiFiConnection() {
 
 // Requests the current thresholds config from the server
 void requestServerConfig() {
-  StaticJsonDocument<64> doc;
+  JsonDocument doc;
   doc["device_code"] = DEVICE_CODE;
   char buffer[64];
   serializeJson(doc, buffer);
@@ -405,34 +415,33 @@ void manageMqttConnection() {
   if (mqttClient.connect(clientId.c_str())) {
     mqttClient.subscribe(TOPIC_CONFIG_RESPONSE);
     mqttClient.subscribe(TOPIC_CMD_BUZZER);
-    if (serverConfig.magic != EEPROM_MAGIC_BYTE) {
-      requestServerConfig();
-    }
+    requestServerConfig(); // Synchronize thresholds once upon connection
   }
 }
 
 // Handles incoming MQTT messages for config updates and buzzer commands
 void mqttCallback(char *topic, byte *payload, unsigned int length) {
-  StaticJsonDocument<512> doc;
+  JsonDocument doc;
   if (deserializeJson(doc, payload, length) != DeserializationError::Ok) return;
 
   const char *code = doc["device_code"] | "";
   if (strcmp(code, DEVICE_CODE) != 0) return;
 
   if (strcmp(topic, TOPIC_CONFIG_RESPONSE) == 0) {
-    serverConfig.minVoltage = doc["min_voltage"] | serverConfig.minVoltage;
-    serverConfig.maxVoltage = doc["max_voltage"] | serverConfig.maxVoltage;
-    serverConfig.minCurrent = doc["min_current"] | serverConfig.minCurrent;
-    serverConfig.maxCurrent = doc["max_current"] | serverConfig.maxCurrent;
-    serverConfig.minPower = doc["min_power"] | serverConfig.minPower;
-    serverConfig.maxPower = doc["max_power"] | serverConfig.maxPower;
-    serverConfig.minFrequency = doc["min_frequency"] | serverConfig.minFrequency;
-    serverConfig.maxFrequency = doc["max_frequency"] | serverConfig.maxFrequency;
-    serverConfig.minPowerFactor = doc["min_power_factor"] | serverConfig.minPowerFactor;
-    serverConfig.maxPowerFactor = doc["max_power_factor"] | serverConfig.maxPowerFactor;
-    serverConfig.minWaterFlow = doc["min_water_flow"] | serverConfig.minWaterFlow;
-    serverConfig.maxWaterFlow = doc["max_water_flow"] | serverConfig.maxWaterFlow;
+    if (!doc["min_voltage"].isNull()) serverConfig.minVoltage = doc["min_voltage"].as<float>();
+    if (!doc["max_voltage"].isNull()) serverConfig.maxVoltage = doc["max_voltage"].as<float>();
+    if (!doc["min_current"].isNull()) serverConfig.minCurrent = doc["min_current"].as<float>();
+    if (!doc["max_current"].isNull()) serverConfig.maxCurrent = doc["max_current"].as<float>();
+    if (!doc["min_power"].isNull()) serverConfig.minPower = doc["min_power"].as<float>();
+    if (!doc["max_power"].isNull()) serverConfig.maxPower = doc["max_power"].as<float>();
+    if (!doc["min_frequency"].isNull()) serverConfig.minFrequency = doc["min_frequency"].as<float>();
+    if (!doc["max_frequency"].isNull()) serverConfig.maxFrequency = doc["max_frequency"].as<float>();
+    if (!doc["min_power_factor"].isNull()) serverConfig.minPowerFactor = doc["min_power_factor"].as<float>();
+    if (!doc["max_power_factor"].isNull()) serverConfig.maxPowerFactor = doc["max_power_factor"].as<float>();
+    if (!doc["min_water_flow"].isNull()) serverConfig.minWaterFlow = doc["min_water_flow"].as<float>();
+    if (!doc["max_water_flow"].isNull()) serverConfig.maxWaterFlow = doc["max_water_flow"].as<float>();
     saveServerConfig();
+    Serial.println("[MQTT] Server config synced and saved to EEPROM");
   } else if (strcmp(topic, TOPIC_CMD_BUZZER) == 0) {
     const char *action = doc["action"] | "";
     if (strcmp(action, "ON") == 0) {
@@ -441,25 +450,73 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   }
 }
 
-// Publishes the telemetry JSON payload expected by the server
-void publishTelemetry() {
+// Evaluates whether sensor readings have changed enough to warrant publishing
+bool hasSignificantChange() {
+  if (lastSentVoltage < -900.0f) return true; // First publish after boot
+
+  float v = isnan(latestVoltage) ? 0.0f : latestVoltage;
+  float c = isnan(latestCurrent) ? 0.0f : latestCurrent;
+  float p = isnan(latestPower) ? 0.0f : latestPower;
+  float pf = isnan(latestPowerFactor) ? 0.0f : latestPowerFactor;
+  float f = isnan(latestFrequency) ? 0.0f : latestFrequency;
+  float wFlow = latestWaterFlowLpm;
+  double eTotal = dataCache.energyTotal;
+  double wTotal = dataCache.waterTotalL;
+
+  if (fabs(p - lastSentPower) >= THRESHOLD_DELTA_POWER) return true;
+  if (fabs(c - lastSentCurrent) >= THRESHOLD_DELTA_CURRENT) return true;
+  if (fabs(v - lastSentVoltage) >= THRESHOLD_DELTA_VOLTAGE) return true;
+  if (fabs(wFlow - lastSentWaterFlow) >= THRESHOLD_DELTA_WATER_FLOW) return true;
+  if (fabs(wTotal - lastSentWaterTotal) >= THRESHOLD_DELTA_WATER_TOTAL) return true;
+  if (fabs(eTotal - lastSentEnergyTotal) >= THRESHOLD_DELTA_ENERGY_TOTAL) return true;
+  if (fabs(pf - lastSentPowerFactor) >= THRESHOLD_DELTA_PF) return true;
+  if (fabs(f - lastSentFrequency) >= THRESHOLD_DELTA_FREQ) return true;
+
+  return false;
+}
+
+// Publishes all metrics in a single payload when triggered by data change or heartbeat
+void publishTelemetry(const char *reason) {
   if (!mqttClient.connected()) return;
 
-  StaticJsonDocument<384> doc;
+  float v = isnan(latestVoltage) ? 0.0f : latestVoltage;
+  float c = isnan(latestCurrent) ? 0.0f : latestCurrent;
+  float p = isnan(latestPower) ? 0.0f : latestPower;
+  float pf = isnan(latestPowerFactor) ? 0.0f : latestPowerFactor;
+  float f = isnan(latestFrequency) ? 0.0f : latestFrequency;
+  float wFlow = latestWaterFlowLpm;
+  double eTotal = dataCache.energyTotal;
+  double wTotal = dataCache.waterTotalL;
+
+  JsonDocument doc;
   doc["device_code"] = DEVICE_CODE;
-  doc["voltage"] = isnan(latestVoltage) ? 0 : latestVoltage;
-  doc["current"] = isnan(latestCurrent) ? 0 : latestCurrent;
-  doc["power"] = isnan(latestPower) ? 0 : latestPower;
-  doc["power_factor"] = isnan(latestPowerFactor) ? 0 : latestPowerFactor;
-  doc["frequency"] = isnan(latestFrequency) ? 0 : latestFrequency;
-  doc["energy_total"] = dataCache.energyTotal;
-  doc["water_flow_lpm"] = latestWaterFlowLpm;
-  doc["water_total_l"] = dataCache.waterTotalL;
+  doc["voltage"] = v;
+  doc["current"] = c;
+  doc["power"] = p;
+  doc["power_factor"] = pf;
+  doc["frequency"] = f;
+  doc["energy_total"] = eTotal;
+  doc["water_flow_lpm"] = wFlow;
+  doc["water_total_l"] = wTotal;
   doc["pulse_count"] = dataCache.pulseCountTotal;
 
   char buffer[384];
   serializeJson(doc, buffer);
   mqttClient.publish(TOPIC_TELEMETRY, buffer);
+
+  // Update snapshot of last sent values
+  lastSentVoltage = v;
+  lastSentCurrent = c;
+  lastSentPower = p;
+  lastSentPowerFactor = pf;
+  lastSentFrequency = f;
+  lastSentWaterFlow = wFlow;
+  lastSentEnergyTotal = eTotal;
+  lastSentWaterTotal = wTotal;
+  lastTelemetryPublish = millis();
+
+  Serial.printf("[MQTT] Sent telemetry (%s): P=%.0fW, V=%.1fV, I=%.2fA, Q=%.2fL/m, Etot=%.3fkWh, Wtot=%.3fL\n",
+                reason, p, v, c, wFlow, eTotal, wTotal);
 }
 
 // Reads PZEM-004T values and integrates instantaneous power into energy_total
@@ -494,22 +551,32 @@ void IRAM_ATTR yf201PulseISR() {
 void updateWaterFlow() {
   unsigned long now = millis();
   unsigned long dt = now - lastWaterMeasureTime;
+  if (dt == 0) return;
   lastWaterMeasureTime = now;
 
   noInterrupts();
   uint32_t currentPulses = pulseCounter;
+  pulseCounter = 0; // Reset counter for the next interval (matching manufacturer example)
   interrupts();
 
-  uint32_t deltaPulses = currentPulses - lastPulseSnapshot;
-  lastPulseSnapshot = currentPulses;
+  uint32_t deltaPulses = currentPulses;
 
   if (dt > 0) {
-    float pulsesPerSecond = deltaPulses * 1000.0f / dt;
-    latestWaterFlowLpm = (pulsesPerSecond * 60.0f) / YF201_PULSES_PER_LITER;
+    // Exact formula from manufacturer sample:
+    // flowRate (L/min) = ((1000.0 / dt_ms) * pulseCount) / calibrationFactor (4.5)
+    latestWaterFlowLpm = ((1000.0f / (float)dt) * (float)deltaPulses) / YF201_CALIBRATION_FACTOR;
   }
 
-  dataCache.waterTotalL += deltaPulses / YF201_PULSES_PER_LITER;
+  // Volume in Liters for this interval:
+  // (flowRate / 60) * (dt / 1000) = deltaPulses / (4.5 * 60) = deltaPulses / 270.0
+  double deltaLiters = (double)deltaPulses / (double)YF201_PULSES_PER_LITER;
+  dataCache.waterTotalL += deltaLiters;
   dataCache.pulseCountTotal += deltaPulses;
+
+  if (deltaPulses > 0) {
+    Serial.printf("[YF201] Pulses: +%u (Total: %u) | Flow: %.2f L/min | Water Total: %.3f L\n",
+                  deltaPulses, dataCache.pulseCountTotal, latestWaterFlowLpm, dataCache.waterTotalL);
+  }
 }
 
 // Configures the system clock via NTP
@@ -640,7 +707,11 @@ void refreshWidgetValues() {
   snprintf(buf, sizeof(buf), "%.2f", dataCache.energyTotal);
   drawValueField(4, 24, 72, 44, buf, prevEnergyStr, sizeof(prevEnergyStr), ST77XX_BLACK, ST77XX_YELLOW, 2);
 
-  snprintf(buf, sizeof(buf), "%.1f", dataCache.waterTotalL);
+  if (dataCache.waterTotalL < 100.0) {
+    snprintf(buf, sizeof(buf), "%.2f", dataCache.waterTotalL);
+  } else {
+    snprintf(buf, sizeof(buf), "%.1f", dataCache.waterTotalL);
+  }
   drawValueField(84, 24, 72, 44, buf, prevWaterStr, sizeof(prevWaterStr), ST77XX_WHITE, ST77XX_BLUE, 2);
 
   snprintf(buf, sizeof(buf), "%.1f", isnan(latestCurrent) ? 0 : latestCurrent);
@@ -733,14 +804,19 @@ void loop() {
     updateWaterFlow();
   }
 
-  if (mqttClient.connected() && serverConfig.magic != EEPROM_MAGIC_BYTE && now - lastConfigRequestTime >= CONFIG_REQUEST_INTERVAL) {
-    requestServerConfig();
-  }
 
-  if (now - lastTelemetryPublish >= TELEMETRY_PUBLISH_INTERVAL) {
-    lastTelemetryPublish = now;
-    publishTelemetry();
-    saveDataCache();
+  // Smart change-driven telemetry publishing:
+  // 1. Triggers immediately when any metric changes significantly (rate-limited to >= TELEMETRY_MIN_INTERVAL)
+  // 2. Or triggers as a periodic heartbeat (TELEMETRY_MAX_INTERVAL) to ensure online status
+  if (mqttClient.connected()) {
+    unsigned long timeSinceLastPub = now - lastTelemetryPublish;
+    if (timeSinceLastPub >= TELEMETRY_MIN_INTERVAL && hasSignificantChange()) {
+      publishTelemetry("data_changed");
+      saveDataCache();
+    } else if (timeSinceLastPub >= TELEMETRY_MAX_INTERVAL) {
+      publishTelemetry("heartbeat");
+      saveDataCache();
+    }
   }
 
   if (now - lastMonthlyCheck >= MONTHLY_RESET_CHECK_INTERVAL) {

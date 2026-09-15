@@ -35,13 +35,24 @@
 #define MQTT_PORT 1883
 
 // Timing constants (ms)
-#define TELEMETRY_PUBLISH_INTERVAL     5000UL
-#define PZEM_READ_INTERVAL             2000UL
+#define TELEMETRY_MIN_INTERVAL         1000UL   // Toi da 1 lan / 1s khi gia tri thay doi lien tuc
+#define TELEMETRY_MAX_INTERVAL         30000UL  // Gui it nhat 1 lan / 30s (Heartbeat) ke ca khong doi
+#define PZEM_READ_INTERVAL             1500UL
 #define WATER_MEASURE_INTERVAL         1000UL
 #define DISPLAY_REFRESH_INTERVAL       500UL
 #define WIFI_RECONNECT_INTERVAL        10000UL
 #define MQTT_RECONNECT_INTERVAL        5000UL
 #define CONFIG_REQUEST_INTERVAL        15000UL
+
+// Nguong phat hien thay doi de trigger gui du lieu (Deadbands)
+#define THRESHOLD_DELTA_POWER          3.0f     // Watts (cong suat doi > 3W)
+#define THRESHOLD_DELTA_CURRENT        0.03f    // Amperes (dong dien doi > 0.03A)
+#define THRESHOLD_DELTA_VOLTAGE        1.5f     // Volts (dien ap doi > 1.5V)
+#define THRESHOLD_DELTA_WATER_FLOW     0.1f    // L/min (dong nuoc chay/ngung/doi > 0.1 L/p)
+#define THRESHOLD_DELTA_WATER_TOTAL    0.05     // Liters (tich luy them > 0.05L)
+#define THRESHOLD_DELTA_ENERGY_TOTAL   0.005    // kWh (tich luy them > 5Wh)
+#define THRESHOLD_DELTA_PF             0.05f    // He so cong suat
+#define THRESHOLD_DELTA_FREQ           0.5f     // Tan so (Hz)
 #define BOOT_HOLD_TIME                 3000UL
 #define SETUP_BUZZER_INTERVAL          300UL
 #define STARTUP_BUZZER_DURATION        100UL
@@ -53,8 +64,9 @@
 #define MONTHLY_RESET_CHECK_INTERVAL   30000UL
 #define BOOT_MONTH_CHECK_RETRY_INTERVAL 2000UL
 
-// YF-201 calibration (pulses per liter, adjust to sensor datasheet)
-#define YF201_PULSES_PER_LITER 450.0f
+// YF-201 calibration from manufacturer: F = 4.5 * Q (Q in L/min, F in Hz)
+#define YF201_CALIBRATION_FACTOR 4.5f
+#define YF201_PULSES_PER_LITER   (YF201_CALIBRATION_FACTOR * 60.0f) // 270 pulses/L
 
 // EEPROM layout
 #define EEPROM_SIZE         512

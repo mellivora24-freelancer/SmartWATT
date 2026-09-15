@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone VARCHAR(50) NOT NULL UNIQUE,
     password TEXT NOT NULL,
     electric_price NUMERIC(12,4) DEFAULT 0,
+    water_price NUMERIC(12,4) DEFAULT 10000,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -1,3 +1,5 @@
+version: "3.8"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,6 +11,9 @@ services:
       POSTGRES_PASSWORD: smartwatt
     ports:
       - "5432:5432"
+    volumes:
+      - smartwatt-postgres-data:/var/lib/postgresql/data
+      - ./database:/docker-entrypoint-initdb.d:ro
 
   mosquitto:
     image: eclipse-mosquitto:2.0
@@ -16,10 +21,35 @@ services:
     restart: unless-stopped
     ports:
       - "1883:1883"
-    environment:
-      MOSQUITTO_USERNAME: smartwatt
-      MOSQUITTO_PASSWORD: smartwatt
     volumes:
       - ./mosquitto/:/mosquitto/
     command: >
       sh -c "mosquitto -c /mosquitto/mosquitto.conf"
+
+  backend:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: smartwatt-backend
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - mosquitto
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: smartwatt
+      DB_USER: smartwatt
+      DB_PASSWORD: smartwatt
+      MQTT_BROKER_HOST: mosquitto
+      MQTT_BROKER_PORT: "1883"
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+    ports:
+      - "8000:8000"
+
+volumes:
+  smartwatt-postgres-data:

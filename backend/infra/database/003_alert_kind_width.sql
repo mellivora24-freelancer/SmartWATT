@@ -1,0 +1,2 @@
+ALTER TABLE alert_logs
+    ALTER COLUMN kind TYPE VARCHAR(30);
