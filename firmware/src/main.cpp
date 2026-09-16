@@ -30,9 +30,21 @@ uint8_t connectedBeepStep = 0;
 unsigned long connectedBeepStepStart = 0;
 bool wasFullyConnected = false;
 
+struct MelodyNote { uint16_t freq; uint16_t duration; };
+const MelodyNote STARTUP_MELODY[] = {
+  { 523, 200 },  // C5
+  { 587, 200 },  // D5
+  { 784, 360 },  // G5
+};
+
+const uint8_t STARTUP_MELODY_LEN = sizeof(STARTUP_MELODY) / sizeof(STARTUP_MELODY[0]);
+uint8_t startupMelodyStep = 0;
+unsigned long startupMelodyStepStart = 0;
+
 bool bootButtonPressed = false;
 unsigned long bootButtonPressStart = 0;
 bool setupModeTriggered = false;
+bool pendingSetupEntry = false; // true trong luc cho tieng bip-bip phat xong roi moi vao setup mode
 
 unsigned long splashStartTime = 0;
 bool widgetsDrawn = false;
@@ -124,11 +136,13 @@ void saveServerConfig();
 void loadDataCache();
 void saveDataCache();
 void startBuzzerStartup();
-void startBuzzerSetup();
+void startBuzzerPressBeep();
+void startBuzzerSetupEnter();
 void startBuzzerConnected();
 void startBuzzerDisconnected();
 void stopBuzzer();
 void updateBuzzer();
+void updateDoubleBeepStep(unsigned long onDuration, unsigned long gapDuration);
 void updateConnectionBuzzer();
 void checkBootButton();
 void enterSetupMode();
@@ -200,18 +214,25 @@ void saveDataCache() {
   EEPROM.commit();
 }
 
-// Starts the single startup beep pattern
 void startBuzzerStartup() {
   buzzerMode = BUZZER_STARTUP_BEEP;
+  startupMelodyStep = 0;
+  startupMelodyStepStart = millis();
+  buzzerOn = true;
+  tone(PIN_BUZZER, STARTUP_MELODY[0].freq);
+}
+
+void startBuzzerPressBeep() {
+  buzzerMode = BUZZER_PRESS_BEEP;
   buzzerEventStart = millis();
   buzzerOn = true;
   digitalWrite(PIN_BUZZER, HIGH);
 }
 
-// Starts the continuous double-beep pattern used in setup mode
-void startBuzzerSetup() {
-  buzzerMode = BUZZER_SETUP_BEEP;
-  buzzerLastToggle = millis();
+void startBuzzerSetupEnter() {
+  buzzerMode = BUZZER_SETUP_ENTER_BEEP;
+  connectedBeepStep = 0;
+  connectedBeepStepStart = millis();
   buzzerOn = true;
   digitalWrite(PIN_BUZZER, HIGH);
 }
@@ -237,7 +258,26 @@ void startBuzzerDisconnected() {
 void stopBuzzer() {
   buzzerMode = BUZZER_IDLE;
   buzzerOn = false;
+  noTone(PIN_BUZZER);
   digitalWrite(PIN_BUZZER, LOW);
+}
+
+// Advances a generic one-shot "beep - gap - beep" pattern (used for the
+// Wi-Fi/MQTT connected chime and the pre-setup-mode double beep)
+void updateDoubleBeepStep(unsigned long onDuration, unsigned long gapDuration) {
+  unsigned long now = millis();
+  unsigned long elapsed = now - connectedBeepStepStart;
+  if (connectedBeepStep == 0 && elapsed >= onDuration) {
+    digitalWrite(PIN_BUZZER, LOW);
+    connectedBeepStep = 1;
+    connectedBeepStepStart = now;
+  } else if (connectedBeepStep == 1 && elapsed >= gapDuration) {
+    digitalWrite(PIN_BUZZER, HIGH);
+    connectedBeepStep = 2;
+    connectedBeepStepStart = now;
+  } else if (connectedBeepStep == 2 && elapsed >= onDuration) {
+    stopBuzzer();
+  }
 }
 
 // Advances the current buzzer pattern without blocking the loop
@@ -245,28 +285,23 @@ void updateBuzzer() {
   unsigned long now = millis();
 
   if (buzzerMode == BUZZER_STARTUP_BEEP) {
-    if (now - buzzerEventStart >= STARTUP_BUZZER_DURATION) {
+    if (now - startupMelodyStepStart >= STARTUP_MELODY[startupMelodyStep].duration) {
+      startupMelodyStep++;
+      if (startupMelodyStep >= STARTUP_MELODY_LEN) {
+        stopBuzzer();
+      } else {
+        startupMelodyStepStart = now;
+        tone(PIN_BUZZER, STARTUP_MELODY[startupMelodyStep].freq);
+      }
+    }
+  } else if (buzzerMode == BUZZER_PRESS_BEEP) {
+    if (now - buzzerEventStart >= PRESS_BEEP_DURATION) {
       stopBuzzer();
     }
-  } else if (buzzerMode == BUZZER_SETUP_BEEP) {
-    if (now - buzzerLastToggle >= SETUP_BUZZER_INTERVAL) {
-      buzzerLastToggle = now;
-      buzzerOn = !buzzerOn;
-      digitalWrite(PIN_BUZZER, buzzerOn ? HIGH : LOW);
-    }
+  } else if (buzzerMode == BUZZER_SETUP_ENTER_BEEP) {
+    updateDoubleBeepStep(SETUP_ENTER_BEEP_ON_DURATION, SETUP_ENTER_BEEP_GAP_DURATION);
   } else if (buzzerMode == BUZZER_CONNECTED_BEEP) {
-    unsigned long elapsed = now - connectedBeepStepStart;
-    if (connectedBeepStep == 0 && elapsed >= CONNECTED_BEEP_ON_DURATION) {
-      digitalWrite(PIN_BUZZER, LOW);
-      connectedBeepStep = 1;
-      connectedBeepStepStart = now;
-    } else if (connectedBeepStep == 1 && elapsed >= CONNECTED_BEEP_GAP_DURATION) {
-      digitalWrite(PIN_BUZZER, HIGH);
-      connectedBeepStep = 2;
-      connectedBeepStepStart = now;
-    } else if (connectedBeepStep == 2 && elapsed >= CONNECTED_BEEP_ON_DURATION) {
-      stopBuzzer();
-    }
+    updateDoubleBeepStep(CONNECTED_BEEP_ON_DURATION, CONNECTED_BEEP_GAP_DURATION);
   } else if (buzzerMode == BUZZER_DISCONNECTED_BEEP) {
     if (buzzerOn) {
       if (now - buzzerLastToggle >= DISCONNECTED_BEEP_ON_DURATION) {
@@ -301,7 +336,9 @@ void updateConnectionBuzzer() {
   }
 }
 
-// Tracks BOOT button hold duration and triggers setup mode after 3 seconds
+// Tracks BOOT button hold duration. A short press just beeps once; holding it
+// for BOOT_HOLD_TIME plays a double beep and then (once the beep finishes,
+// see the pendingSetupEntry check in loop()) switches into setup mode.
 void checkBootButton() {
   bool pressed = digitalRead(PIN_BOOT_BTN) == LOW;
   unsigned long now = millis();
@@ -309,6 +346,7 @@ void checkBootButton() {
   if (pressed && !bootButtonPressed) {
     bootButtonPressed = true;
     bootButtonPressStart = now;
+    startBuzzerPressBeep();
   } else if (!pressed && bootButtonPressed) {
     bootButtonPressed = false;
     setupModeTriggered = false;
@@ -316,15 +354,16 @@ void checkBootButton() {
 
   if (bootButtonPressed && !setupModeTriggered && (now - bootButtonPressStart >= BOOT_HOLD_TIME)) {
     setupModeTriggered = true;
-    enterSetupMode();
+    pendingSetupEntry = true;
+    startBuzzerSetupEnter();
   }
 }
 
-// Switches the device into Wi-Fi/MQTT setup mode
+// Switches the device into Wi-Fi/MQTT setup mode. No buzzer pattern is
+// started here - once in setup mode the buzzer stays silent.
 void enterSetupMode() {
   if (currentState == STATE_SETUP_MODE) return;
   currentState = STATE_SETUP_MODE;
-  startBuzzerSetup();
   startWiFiPortal();
   drawSetupModeScreen();
 }
@@ -756,6 +795,11 @@ void loop() {
 
   checkBootButton();
   updateBuzzer();
+
+  if (pendingSetupEntry && buzzerMode == BUZZER_IDLE) {
+    pendingSetupEntry = false;
+    enterSetupMode();
+  }
 
   if (currentState == STATE_BOOT_SPLASH) {
     if (now - splashStartTime >= SPLASH_SCREEN_DURATION) {
