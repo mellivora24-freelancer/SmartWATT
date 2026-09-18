@@ -3,30 +3,23 @@
 
 #include <Arduino.h>
 
-// TFT display pins (SPI, module labels MOSI/SCK as SDA/SCL)
 #define PIN_TFT_SDA   21
 #define PIN_TFT_SCL   22
 #define PIN_TFT_RST   18
 #define PIN_TFT_DC    19
 #define PIN_TFT_CS    23
 
-// PZEM-004T UART2 pins
 #define PIN_PZEM_RX   16
 #define PIN_PZEM_TX   17
 
-// YF-201 water flow sensor
 #define PIN_YF201     26
 
-// Buzzer
 #define PIN_BUZZER    4
 
-// BOOT button (onboard, active LOW)
 #define PIN_BOOT_BTN  0
 
-// Device identity
 #define DEVICE_CODE   "SW-001"
 
-// MQTT topics
 #define TOPIC_TELEMETRY       "smartwatt/telemetry"
 #define TOPIC_CONFIG_REQUEST  "smartwatt/config/request"
 #define TOPIC_CONFIG_RESPONSE "smartwatt/config/response"
@@ -34,9 +27,8 @@
 
 #define MQTT_PORT 1883
 
-// Timing constants (ms)
-#define TELEMETRY_MIN_INTERVAL         1000UL   // Toi da 1 lan / 1s khi gia tri thay doi lien tuc
-#define TELEMETRY_MAX_INTERVAL         30000UL  // Gui it nhat 1 lan / 30s (Heartbeat) ke ca khong doi
+#define TELEMETRY_MIN_INTERVAL         1000UL
+#define TELEMETRY_MAX_INTERVAL         30000UL
 #define PZEM_READ_INTERVAL             1500UL
 #define WATER_MEASURE_INTERVAL         1000UL
 #define DISPLAY_REFRESH_INTERVAL       500UL
@@ -44,15 +36,14 @@
 #define MQTT_RECONNECT_INTERVAL        5000UL
 #define CONFIG_REQUEST_INTERVAL        15000UL
 
-// Nguong phat hien thay doi de trigger gui du lieu (Deadbands)
-#define THRESHOLD_DELTA_POWER          3.0f     // Watts (cong suat doi > 3W)
-#define THRESHOLD_DELTA_CURRENT        0.03f    // Amperes (dong dien doi > 0.03A)
-#define THRESHOLD_DELTA_VOLTAGE        1.5f     // Volts (dien ap doi > 1.5V)
-#define THRESHOLD_DELTA_WATER_FLOW     0.1f    // L/min (dong nuoc chay/ngung/doi > 0.1 L/p)
-#define THRESHOLD_DELTA_WATER_TOTAL    0.05     // Liters (tich luy them > 0.05L)
-#define THRESHOLD_DELTA_ENERGY_TOTAL   0.005    // kWh (tich luy them > 5Wh)
-#define THRESHOLD_DELTA_PF             0.05f    // He so cong suat
-#define THRESHOLD_DELTA_FREQ           0.5f     // Tan so (Hz)
+#define THRESHOLD_DELTA_POWER          3.0f
+#define THRESHOLD_DELTA_CURRENT        0.03f
+#define THRESHOLD_DELTA_VOLTAGE        1.5f
+#define THRESHOLD_DELTA_WATER_FLOW     0.1f
+#define THRESHOLD_DELTA_WATER_TOTAL    0.05
+#define THRESHOLD_DELTA_ENERGY_TOTAL   0.005
+#define THRESHOLD_DELTA_PF             0.05f
+#define THRESHOLD_DELTA_FREQ           0.5f
 #define BOOT_HOLD_TIME                 3000UL
 #define SETUP_BUZZER_INTERVAL          300UL
 #define STARTUP_BUZZER_DURATION        100UL
@@ -60,6 +51,9 @@
 #define CONNECTED_BEEP_GAP_DURATION    100UL
 #define DISCONNECTED_BEEP_INTERVAL     1000UL
 #define DISCONNECTED_BEEP_ON_DURATION  100UL
+#define ALERT_BEEP_ON_DURATION         80UL
+#define ALERT_BEEP_GAP_DURATION        80UL
+#define ALERT_BEEP_MAX_DURATION        8000UL
 #define PRESS_BEEP_DURATION            80UL
 #define SETUP_ENTER_BEEP_ON_DURATION   130UL
 #define SETUP_ENTER_BEEP_GAP_DURATION  110UL
@@ -67,11 +61,23 @@
 #define MONTHLY_RESET_CHECK_INTERVAL   30000UL
 #define BOOT_MONTH_CHECK_RETRY_INTERVAL 2000UL
 
-// YF-201 calibration from manufacturer: F = 4.5 * Q (Q in L/min, F in Hz)
 #define YF201_CALIBRATION_FACTOR 4.5f
-#define YF201_PULSES_PER_LITER   (YF201_CALIBRATION_FACTOR * 60.0f) // 270 pulses/L
+#define YF201_PULSES_PER_LITER   (YF201_CALIBRATION_FACTOR * 60.0f)
 
-// EEPROM layout
+#define PZEM_MIN_VOLTAGE     80.0f
+#define PZEM_MAX_VOLTAGE     300.0f
+#define PZEM_MIN_CURRENT     0.0f
+#define PZEM_MAX_CURRENT     100.0f
+#define PZEM_MIN_POWER       0.0f
+#define PZEM_MAX_POWER       25000.0f
+#define PZEM_MIN_PF          0.0f
+#define PZEM_MAX_PF          1.0f
+#define PZEM_MIN_FREQ        45.0f
+#define PZEM_MAX_FREQ        65.0f
+
+#define MAX_PLAUSIBLE_ENERGY_TOTAL   50000.0
+#define MAX_PLAUSIBLE_WATER_TOTAL    1000000.0
+
 #define EEPROM_SIZE         512
 #define EEPROM_ADDR_WIFI    0
 #define EEPROM_ADDR_SERVER  128
@@ -122,7 +128,8 @@ enum BuzzerMode {
   BUZZER_PRESS_BEEP,
   BUZZER_SETUP_ENTER_BEEP,
   BUZZER_CONNECTED_BEEP,
-  BUZZER_DISCONNECTED_BEEP
+  BUZZER_DISCONNECTED_BEEP,
+  BUZZER_ALERT_BEEP
 };
 
 #endif

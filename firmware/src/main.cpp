@@ -32,9 +32,9 @@ bool wasFullyConnected = false;
 
 struct MelodyNote { uint16_t freq; uint16_t duration; };
 const MelodyNote STARTUP_MELODY[] = {
-  { 523, 200 },  // C5
-  { 587, 200 },  // D5
-  { 784, 360 },  // G5
+  { 523, 200 },
+  { 587, 200 },
+  { 784, 360 },
 };
 
 const uint8_t STARTUP_MELODY_LEN = sizeof(STARTUP_MELODY) / sizeof(STARTUP_MELODY[0]);
@@ -44,7 +44,7 @@ unsigned long startupMelodyStepStart = 0;
 bool bootButtonPressed = false;
 unsigned long bootButtonPressStart = 0;
 bool setupModeTriggered = false;
-bool pendingSetupEntry = false; // true trong luc cho tieng bip-bip phat xong roi moi vao setup mode
+bool pendingSetupEntry = false;
 
 unsigned long splashStartTime = 0;
 bool widgetsDrawn = false;
@@ -60,7 +60,6 @@ float latestPowerFactor = NAN;
 float latestFrequency = NAN;
 unsigned long lastPzemReadTime = 0;
 
-// Snapshot of last published values for change detection
 float lastSentVoltage = -999.0f;
 float lastSentCurrent = -999.0f;
 float lastSentPower = -999.0f;
@@ -140,6 +139,7 @@ void startBuzzerPressBeep();
 void startBuzzerSetupEnter();
 void startBuzzerConnected();
 void startBuzzerDisconnected();
+void startBuzzerAlert();
 void stopBuzzer();
 void updateBuzzer();
 void updateDoubleBeepStep(unsigned long onDuration, unsigned long gapDuration);
@@ -199,11 +199,19 @@ void saveServerConfig() {
   EEPROM.commit();
 }
 
-// Loads accumulated energy/water totals from EEPROM
+// Loads accumulated energy/water totals from EEPROM, resetting to zero if the stored data is missing or implausible
 void loadDataCache() {
   EEPROM.get(EEPROM_ADDR_CACHE, dataCache);
-  if (dataCache.magic != EEPROM_MAGIC_BYTE) {
+
+  bool invalid = (dataCache.magic != EEPROM_MAGIC_BYTE) ||
+                 isnan(dataCache.energyTotal) || dataCache.energyTotal < 0 ||
+                 dataCache.energyTotal > MAX_PLAUSIBLE_ENERGY_TOTAL ||
+                 isnan(dataCache.waterTotalL) || dataCache.waterTotalL < 0 ||
+                 dataCache.waterTotalL > MAX_PLAUSIBLE_WATER_TOTAL;
+
+  if (invalid) {
     memset(&dataCache, 0, sizeof(dataCache));
+    saveDataCache();
   }
 }
 
@@ -214,6 +222,7 @@ void saveDataCache() {
   EEPROM.commit();
 }
 
+// Starts the boot-up melody
 void startBuzzerStartup() {
   buzzerMode = BUZZER_STARTUP_BEEP;
   startupMelodyStep = 0;
@@ -222,6 +231,7 @@ void startBuzzerStartup() {
   tone(PIN_BUZZER, STARTUP_MELODY[0].freq);
 }
 
+// Starts a short single beep for a boot-button press
 void startBuzzerPressBeep() {
   buzzerMode = BUZZER_PRESS_BEEP;
   buzzerEventStart = millis();
@@ -229,6 +239,7 @@ void startBuzzerPressBeep() {
   digitalWrite(PIN_BUZZER, HIGH);
 }
 
+// Starts the double beep played just before entering setup mode
 void startBuzzerSetupEnter() {
   buzzerMode = BUZZER_SETUP_ENTER_BEEP;
   connectedBeepStep = 0;
@@ -254,6 +265,15 @@ void startBuzzerDisconnected() {
   digitalWrite(PIN_BUZZER, HIGH);
 }
 
+// Starts the fast repeating alert beep, auto-stopping after ALERT_BEEP_MAX_DURATION
+void startBuzzerAlert() {
+  buzzerMode = BUZZER_ALERT_BEEP;
+  buzzerOn = true;
+  buzzerLastToggle = millis();
+  buzzerEventStart = millis();
+  digitalWrite(PIN_BUZZER, HIGH);
+}
+
 // Silences the buzzer and clears the active pattern
 void stopBuzzer() {
   buzzerMode = BUZZER_IDLE;
@@ -262,8 +282,7 @@ void stopBuzzer() {
   digitalWrite(PIN_BUZZER, LOW);
 }
 
-// Advances a generic one-shot "beep - gap - beep" pattern (used for the
-// Wi-Fi/MQTT connected chime and the pre-setup-mode double beep)
+// Advances a generic one-shot "beep - gap - beep" pattern
 void updateDoubleBeepStep(unsigned long onDuration, unsigned long gapDuration) {
   unsigned long now = millis();
   unsigned long elapsed = now - connectedBeepStepStart;
@@ -316,6 +335,22 @@ void updateBuzzer() {
         digitalWrite(PIN_BUZZER, HIGH);
       }
     }
+  } else if (buzzerMode == BUZZER_ALERT_BEEP) {
+    if (now - buzzerEventStart >= ALERT_BEEP_MAX_DURATION) {
+      stopBuzzer();
+    } else if (buzzerOn) {
+      if (now - buzzerLastToggle >= ALERT_BEEP_ON_DURATION) {
+        buzzerOn = false;
+        buzzerLastToggle = now;
+        digitalWrite(PIN_BUZZER, LOW);
+      }
+    } else {
+      if (now - buzzerLastToggle >= ALERT_BEEP_GAP_DURATION) {
+        buzzerOn = true;
+        buzzerLastToggle = now;
+        digitalWrite(PIN_BUZZER, HIGH);
+      }
+    }
   }
 }
 
@@ -336,9 +371,7 @@ void updateConnectionBuzzer() {
   }
 }
 
-// Tracks BOOT button hold duration. A short press just beeps once; holding it
-// for BOOT_HOLD_TIME plays a double beep and then (once the beep finishes,
-// see the pendingSetupEntry check in loop()) switches into setup mode.
+// Tracks BOOT button hold duration, triggering the setup-mode entry sequence once held long enough
 void checkBootButton() {
   bool pressed = digitalRead(PIN_BOOT_BTN) == LOW;
   unsigned long now = millis();
@@ -359,8 +392,7 @@ void checkBootButton() {
   }
 }
 
-// Switches the device into Wi-Fi/MQTT setup mode. No buzzer pattern is
-// started here - once in setup mode the buzzer stays silent.
+// Switches the device into Wi-Fi/MQTT setup mode
 void enterSetupMode() {
   if (currentState == STATE_SETUP_MODE) return;
   currentState = STATE_SETUP_MODE;
@@ -454,7 +486,7 @@ void manageMqttConnection() {
   if (mqttClient.connect(clientId.c_str())) {
     mqttClient.subscribe(TOPIC_CONFIG_RESPONSE);
     mqttClient.subscribe(TOPIC_CMD_BUZZER);
-    requestServerConfig(); // Synchronize thresholds once upon connection
+    requestServerConfig();
   }
 }
 
@@ -484,14 +516,16 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   } else if (strcmp(topic, TOPIC_CMD_BUZZER) == 0) {
     const char *action = doc["action"] | "";
     if (strcmp(action, "ON") == 0) {
-      startBuzzerStartup();
+      startBuzzerAlert();
+    } else if (strcmp(action, "OFF") == 0) {
+      stopBuzzer();
     }
   }
 }
 
 // Evaluates whether sensor readings have changed enough to warrant publishing
 bool hasSignificantChange() {
-  if (lastSentVoltage < -900.0f) return true; // First publish after boot
+  if (lastSentVoltage < -900.0f) return true;
 
   float v = isnan(latestVoltage) ? 0.0f : latestVoltage;
   float c = isnan(latestCurrent) ? 0.0f : latestCurrent;
@@ -543,7 +577,6 @@ void publishTelemetry(const char *reason) {
   serializeJson(doc, buffer);
   mqttClient.publish(TOPIC_TELEMETRY, buffer);
 
-  // Update snapshot of last sent values
   lastSentVoltage = v;
   lastSentCurrent = c;
   lastSentPower = p;
@@ -558,7 +591,7 @@ void publishTelemetry(const char *reason) {
                 reason, p, v, c, wFlow, eTotal, wTotal);
 }
 
-// Reads PZEM-004T values and integrates instantaneous power into energy_total
+// Reads PZEM-004T values (rejecting implausible readings) and integrates instantaneous power into energy_total
 void readPzemData() {
   unsigned long now = millis();
   unsigned long dt = now - lastPzemReadTime;
@@ -570,12 +603,12 @@ void readPzemData() {
   float pf = pzem.pf();
   float f = pzem.frequency();
 
-  if (!isnan(v)) latestVoltage = v;
-  if (!isnan(c)) latestCurrent = c;
-  if (!isnan(f)) latestFrequency = f;
-  if (!isnan(pf)) latestPowerFactor = pf;
+  if (!isnan(v) && v >= PZEM_MIN_VOLTAGE && v <= PZEM_MAX_VOLTAGE) latestVoltage = v;
+  if (!isnan(c) && c >= PZEM_MIN_CURRENT && c <= PZEM_MAX_CURRENT) latestCurrent = c;
+  if (!isnan(f) && f >= PZEM_MIN_FREQ && f <= PZEM_MAX_FREQ) latestFrequency = f;
+  if (!isnan(pf) && pf >= PZEM_MIN_PF && pf <= PZEM_MAX_PF) latestPowerFactor = pf;
 
-  if (!isnan(p)) {
+  if (!isnan(p) && p >= PZEM_MIN_POWER && p <= PZEM_MAX_POWER) {
     latestPower = p;
     dataCache.energyTotal += (p * (dt / 3600000.0)) / 1000.0;
   }
@@ -595,19 +628,15 @@ void updateWaterFlow() {
 
   noInterrupts();
   uint32_t currentPulses = pulseCounter;
-  pulseCounter = 0; // Reset counter for the next interval (matching manufacturer example)
+  pulseCounter = 0;
   interrupts();
 
   uint32_t deltaPulses = currentPulses;
 
   if (dt > 0) {
-    // Exact formula from manufacturer sample:
-    // flowRate (L/min) = ((1000.0 / dt_ms) * pulseCount) / calibrationFactor (4.5)
     latestWaterFlowLpm = ((1000.0f / (float)dt) * (float)deltaPulses) / YF201_CALIBRATION_FACTOR;
   }
 
-  // Volume in Liters for this interval:
-  // (flowRate / 60) * (dt / 1000) = deltaPulses / (4.5 * 60) = deltaPulses / 270.0
   double deltaLiters = (double)deltaPulses / (double)YF201_PULSES_PER_LITER;
   dataCache.waterTotalL += deltaLiters;
   dataCache.pulseCountTotal += deltaPulses;
@@ -650,9 +679,7 @@ void checkMonthlyReset() {
   resetMonthlyAccumulators(currentYear, currentMonth);
 }
 
-// Compares the month saved in EEPROM against the current month once at boot,
-// so a reset that was missed while the device was powered off still applies.
-// Returns true once NTP time was successfully obtained.
+// Applies any monthly reset that was missed while the device was powered off, once NTP time is available
 bool checkMonthlyResetOnBoot() {
   struct tm timeInfo;
   if (!getLocalTime(&timeInfo, 100)) return false;
@@ -763,6 +790,7 @@ void refreshWidgetValues() {
   drawValueField(111, 102, 44, 20, buf, prevFlowStr, sizeof(prevFlowStr), ST77XX_WHITE, ST77XX_BLACK, 1);
 }
 
+// Initializes peripherals, loads persisted config, and shows the boot splash
 void setup() {
   Serial.begin(115200);
 
@@ -778,7 +806,7 @@ void setup() {
   loadDataCache();
 
   tft.initR(INITR_BLACKTAB);
-  tft.setRotation(3); // -90 do so voi portrait mac dinh; doi thanh 1 neu anh bi lat nguoc
+  tft.setRotation(3);
 
   drawSplashScreen();
   startBuzzerStartup();
@@ -790,6 +818,7 @@ void setup() {
   lastWaterMeasureTime = millis();
 }
 
+// Main loop: drives connection management, sensor reads, telemetry publishing and the display
 void loop() {
   unsigned long now = millis();
 
@@ -849,9 +878,6 @@ void loop() {
   }
 
 
-  // Smart change-driven telemetry publishing:
-  // 1. Triggers immediately when any metric changes significantly (rate-limited to >= TELEMETRY_MIN_INTERVAL)
-  // 2. Or triggers as a periodic heartbeat (TELEMETRY_MAX_INTERVAL) to ensure online status
   if (mqttClient.connected()) {
     unsigned long timeSinceLastPub = now - lastTelemetryPublish;
     if (timeSinceLastPub >= TELEMETRY_MIN_INTERVAL && hasSignificantChange()) {
