@@ -348,6 +348,9 @@ async def recent_alerts(device_id: int, limit: int = 20) -> list[dict]:
         device_id,
         limit,
     )
+
+    return [_norm(row) for row in rows]
+
 async def delete_alert(alert_id: int, user_id: int) -> bool:
     res = await db.pool().execute(
         """
